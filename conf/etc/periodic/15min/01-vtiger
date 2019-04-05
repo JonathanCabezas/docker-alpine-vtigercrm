@@ -1,0 +1,7 @@
+#!/bin/sh
+
+run(){
+    eval "su - nginx -s /bin/ash -c 'cd /var/www/drupal/ && "$@"'" 
+    return $? 
+}
+run php /var/www/vtigercrm/vtigercron.php

@@ -1,0 +1,6 @@
+#!/bin/sh
+NAME="PHP-FPM" 
+COMMAND="php-fpm7 -F" 
+WAIT="/tmp/vtigercrm"
+
+exec service-handler "$NAME" "$COMMAND" "$WAIT"

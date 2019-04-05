@@ -1,0 +1,112 @@
+#!/usr/bin/with-contenv sh
+
+do_query(){
+        echo $1 > /tmp/cmd
+        /usr/bin/mysql -h ${DATABASE_HOST} -P ${DATABASE_PORT} -u ${VTIGER_DB_USERNAME} ${VTIGER_DB_NAME} --password=${VTIGER_DB_PASSWORD} </tmp/cmd 
+        RET=$?
+        rm /tmp/cmd
+        return $RET
+}
+
+do_import_db(){
+        /usr/bin/mysql -h ${DATABASE_HOST} -P ${DATABASE_PORT} -u ${VTIGER_DB_USERNAME} ${VTIGER_DB_NAME} --password=${VTIGER_DB_PASSWORD} < $1 
+        RET=$?
+        return $RET
+}
+
+run(){
+    eval "su - nginx -s /bin/ash -c 'cd /var/www/vtigercrm/ && "$@"'" 
+    return $? 
+}
+
+install(){
+    echo "> Install"
+    if [ ! -d /var/www/vtigercrm ] 
+    then
+        echo ">>> No volume mounted"
+        mkdir -p /var/www/vtigercrm
+        chown nginx:nginx /var/www/vtigercrm -R
+    fi
+    INSTALLED=$(ls -A /var/www/vtigercrm/index.php)
+    if [ -z "$INSTALLED" ];
+    then
+        echo ">>> Installing"
+        tar -xJf /opt/ressources/vtigercrm.txz --strip-component=1 -C /var/www/vtigercrm/ || return 1
+        chown nginx:nginx /var/www/vtigercrm -R
+    else
+        echo ">>> Already Installed"
+    fi
+
+    return 0
+}
+
+php_call(){
+    php_command='php -r "require('"'vtigercrmInstallUtils.php'"');'$1';"'
+    echo -n $(su - nginx -s /bin/ash -c "cd /opt/ressources/ && $php_command")
+}
+
+config(){
+    echo "> Config"
+    echo ">>> Waiting for database to be ready"
+    while  ! $( nc -vz ${DATABASE_HOST} ${DATABASE_PORT} ) ;
+    do
+            sleep 1
+    done
+    CONFIG=$(run php /var/www/vtigercrm/vtigercron.php | grep ENDS)
+    if [ -z "$CONFIG" ];
+    then 
+        sed -i "s/^\(\$dbconfig\['db_server'\] = \).*/\1'${DATABASE_HOST}';/" /var/www/vtigercrm/config.inc.php
+
+        sed -i "s/^\(\$dbconfig\['db_port'\] = \).*/\1':${DATABASE_PORT}';/" /var/www/vtigercrm/config.inc.php
+
+        sed -i "s/^\(\$dbconfig\['db_username'\] = \).*/\1'${VTIGER_DB_USERNAME}';/" /var/www/vtigercrm/config.inc.php
+
+        sed -i "s/^\(\$dbconfig\['db_password'\] = \).*/\1'${VTIGER_DB_PASSWORD}';/" /var/www/vtigercrm/config.inc.php
+
+
+        sed -i "s/^\(\$dbconfig\['db_name'\] = \).*/\1'${VTIGER_DB_NAME}';/" /var/www/vtigercrm/config.inc.php
+
+       
+        echo ">>> Generating new unique application key"
+        application_unique_key=$(php_call 'generate_unique_application_key()')
+        sed -i "s/^\(\$application_unique_key = \).*/\1'$application_unique_key';/" /var/www/vtigercrm/config.inc.php
+
+        echo ">>> Importing vtigercrm database"
+        do_import_db /opt/ressources/vtigercrm.sql  || return 1
+
+        echo ">>> Changing admin information"
+        query_to_change_admin=$(php_call "get_query_to_change_admin('${ADMIN_USERNAME}', '${ADMIN_PASSWORD}', '${ADMIN_EMAIL}')")
+        do_query "$query_to_change_admin"
+
+        echo ">>> Generating new appkey"
+        query_appkey=$(php_call "get_query_appkey()")
+        do_query "$query_appkey"
+
+    else
+        echo ">>> Already Configured"
+    fi
+    
+    return 0
+}
+
+
+cleanup(){
+        rm /opt/ressources/* || true
+        return 0
+}
+
+fail(){
+  echo "[ Failed ]"
+  echo "1" > /tmp/vtigercrm
+  return 1
+
+}
+
+success(){
+  echo "[ Success ]"
+  echo "0" > /tmp/vtigercrm
+  return 0
+
+}
+
+install && config && cleanup && success || fail
