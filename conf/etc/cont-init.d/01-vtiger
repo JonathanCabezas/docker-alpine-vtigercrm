@@ -52,9 +52,18 @@ config(){
     do
             sleep 1
     done
-    CONFIG=$(run php /var/www/vtigercrm/vtigercron.php | grep ENDS)
-    if [ -z "$CONFIG" ];
-    then 
+
+    OUT=$(do_query "SELECT 1 FROM __configured;" 2>&1)
+    RET=$?
+
+    [ $RET -eq 1 ] && echo "$OUT" | grep 1146 >/dev/null
+    NOT_CONFIGURED=$?
+
+    [ $RET -eq 1 -a $NOT_CONFIGURED -eq 1 ]
+    DB_PROBLEM=$?
+
+    if [ $NOT_CONFIGURED -eq 0 ]
+    then
         sed -i "s/^\(\$dbconfig\['db_server'\] = \).*/\1'${DATABASE_HOST}';/" /var/www/vtigercrm/config.inc.php
 
         sed -i "s/^\(\$dbconfig\['db_port'\] = \).*/\1':${DATABASE_PORT}';/" /var/www/vtigercrm/config.inc.php
@@ -63,9 +72,7 @@ config(){
 
         sed -i "s/^\(\$dbconfig\['db_password'\] = \).*/\1'${VTIGER_DB_PASSWORD}';/" /var/www/vtigercrm/config.inc.php
 
-
         sed -i "s/^\(\$dbconfig\['db_name'\] = \).*/\1'${VTIGER_DB_NAME}';/" /var/www/vtigercrm/config.inc.php
-
        
         echo ">>> Generating new unique application key"
         application_unique_key=$(php_call 'generate_unique_application_key()')
@@ -82,16 +89,20 @@ config(){
         query_appkey=$(php_call "get_query_appkey()")
         do_query "$query_appkey"
 
+        do_query "CREATE TABLE __configured(a INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
+    elif [ $DB_PROBLEM -eq 0 ]
+    then
+        echo "Can't connect to database"
+        echo "Query answer: $OUT"
+        kill 1
     else
-        echo ">>> Already Configured"
+        echo "Already configured"
     fi
-    
-    return 0
 }
 
 
 cleanup(){
-        rm /opt/ressources/* || true
+        rm -f /opt/ressources/*
         return 0
 }
 
