@@ -14,6 +14,21 @@ do_import_db(){
         return $RET
 }
 
+check_configured(){
+    OUT=$(do_query "SELECT 1 FROM __configured;" 2>&1)
+    RET=$?
+
+    [ $RET -eq 1 ] && echo "$OUT" | grep 1146 >/dev/null
+    NOT_CONFIGURED=$?
+
+    [ $RET -eq 1 -a $NOT_CONFIGURED -eq 1 ]
+    DB_PROBLEM=$?
+}
+
+add_configured(){
+    do_query "CREATE TABLE __configured(a INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
+}
+
 run(){
     eval "su - nginx -s /bin/ash -c 'cd /var/www/vtigercrm/ && "$@"'" 
     return $? 
@@ -53,14 +68,7 @@ config(){
             sleep 1
     done
 
-    OUT=$(do_query "SELECT 1 FROM __configured;" 2>&1)
-    RET=$?
-
-    [ $RET -eq 1 ] && echo "$OUT" | grep 1146 >/dev/null
-    NOT_CONFIGURED=$?
-
-    [ $RET -eq 1 -a $NOT_CONFIGURED -eq 1 ]
-    DB_PROBLEM=$?
+    check_configured
 
     if [ $NOT_CONFIGURED -eq 0 ]
     then
@@ -89,7 +97,7 @@ config(){
         query_appkey=$(php_call "get_query_appkey()")
         do_query "$query_appkey"
 
-        do_query "CREATE TABLE __configured(a INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
+        add_configured
     elif [ $DB_PROBLEM -eq 0 ]
     then
         echo "Can't connect to database"
