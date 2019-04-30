@@ -4,4 +4,8 @@ run(){
     eval "su - nginx -s /bin/ash -c 'cd /var/www/vtigercrm/ && "$@"'" 
     return $? 
 }
-run php /var/www/vtigercrm/vtigercron.php
+
+if [ -f /tmp/vtigercrm_configured ] && [ $(cat /tmp/vtigercrm_configured) -eq 0 ]
+then
+    run php /var/www/vtigercrm/vtigercron.php
+fi

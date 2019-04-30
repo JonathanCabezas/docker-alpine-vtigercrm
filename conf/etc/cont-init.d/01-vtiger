@@ -1,17 +1,30 @@
 #!/usr/bin/with-contenv sh
 
+run(){
+    eval "su - nginx -s /bin/ash -c 'cd /var/www/vtigercrm/ && "$@"'" 
+    return $? 
+}
+
+wait_db(){
+    echo ">>> Waiting for database to be ready"
+    while ! $( nc -vz ${DATABASE_HOST} ${DATABASE_PORT} )
+    do
+            sleep 1
+    done
+}
+
 do_query(){
-        echo $1 > /tmp/cmd
-        /usr/bin/mysql -h ${DATABASE_HOST} -P ${DATABASE_PORT} -u ${VTIGER_DB_USERNAME} ${VTIGER_DB_NAME} --password=${VTIGER_DB_PASSWORD} </tmp/cmd 
-        RET=$?
-        rm /tmp/cmd
-        return $RET
+    echo $1 > /tmp/cmd
+    /usr/bin/mysql -h ${DATABASE_HOST} -P ${DATABASE_PORT} -u ${VTIGER_DB_USERNAME} ${VTIGER_DB_NAME} --password=${VTIGER_DB_PASSWORD} </tmp/cmd 
+    RET=$?
+    rm /tmp/cmd
+    return $RET
 }
 
 do_import_db(){
-        /usr/bin/mysql -h ${DATABASE_HOST} -P ${DATABASE_PORT} -u ${VTIGER_DB_USERNAME} ${VTIGER_DB_NAME} --password=${VTIGER_DB_PASSWORD} < $1 
-        RET=$?
-        return $RET
+    /usr/bin/mysql -h ${DATABASE_HOST} -P ${DATABASE_PORT} -u ${VTIGER_DB_USERNAME} ${VTIGER_DB_NAME} --password=${VTIGER_DB_PASSWORD} < $1 
+    RET=$?
+    return $RET
 }
 
 check_configured(){
@@ -19,9 +32,10 @@ check_configured(){
     RET=$?
 
     [ $RET -eq 1 ] && echo "$OUT" | grep 1146 >/dev/null
-    NOT_CONFIGURED=$?
+    [ $? -eq 1 ]
+    CONFIGURED=$?
 
-    [ $RET -eq 1 -a $NOT_CONFIGURED -eq 1 ]
+    [ $RET -eq 1 -a $CONFIGURED -eq 0 ]
     DB_PROBLEM=$?
 }
 
@@ -29,9 +43,18 @@ add_configured(){
     do_query "CREATE TABLE __configured(a INT NOT NULL AUTO_INCREMENT PRIMARY KEY);"
 }
 
-run(){
-    eval "su - nginx -s /bin/ash -c 'cd /var/www/vtigercrm/ && "$@"'" 
-    return $? 
+switch_nginx_conf(){
+    mv /etc/nginx/conf.d/vtigercrm* /opt/ressources/nginx/conf.d/ 2>/dev/null
+
+    filename=""
+    [ $1 ] && filename="-$1"
+
+    mv "/opt/ressources/nginx/conf.d/vtigercrm$filename.conf" /etc/nginx/conf.d/
+}
+
+php_call(){
+    php_command='php -r "require('"'vtigercrmInstallUtils.php'"');'$1';"'
+    echo -n $(su - nginx -s /bin/ash -c "cd /opt/ressources/vtigercrm/ && $php_command")
 }
 
 install(){
@@ -39,15 +62,49 @@ install(){
     if [ ! -d /var/www/vtigercrm ] 
     then
         echo ">>> No volume mounted"
+        echo ">>>>> Creating working dir"
         mkdir -p /var/www/vtigercrm
-        chown nginx:nginx /var/www/vtigercrm -R
     fi
-    INSTALLED=$(ls -A /var/www/vtigercrm/index.php)
-    if [ -z "$INSTALLED" ];
+
+    if [ ! -d /var/www/error ]
     then
-        echo ">>> Installing"
-        tar -xJf /opt/ressources/vtigercrm.txz --strip-component=1 -C /var/www/vtigercrm/ || return 1
-        chown nginx:nginx /var/www/vtigercrm -R
+        echo ">>> Creating static web error pages"
+        mkdir -p /var/www/error
+        mv /opt/ressources/www/error/*.html /var/www/error/ 2>/dev/null
+
+        chown nginx:nginx /var/www/error -R
+    fi
+
+    ls /var/www/vtigercrm/index.php >/dev/null 2>&1
+    INSTALLED=$?
+
+    wait_db
+    check_configured
+
+    echo "INSTALLED = $INSTALLED and CONFIGURED = $CONFIGURED"
+
+    if [ $DB_PROBLEM -eq 0 ]
+    then
+        echo ">>> Problem detected, can't connect to database"
+        echo "Query answer: $OUT"
+        switch_nginx_conf db_error
+        success
+    fi
+
+    if [ ! $INSTALLED -eq 0 ]
+    then
+        if [ ! $CONFIGURED -eq 0 ]
+        then
+            echo ">>> Installing"
+            tar -xJf /opt/ressources/vtigercrm/vtigercrm.txz --strip-component=1 -C /var/www/vtigercrm/ || return 1
+
+            echo ">>> Fixing permissions"
+            chown nginx:nginx /var/www/vtigercrm -R
+        else
+            echo ">>> Problem detected, hanging database with no installation"
+            switch_nginx_conf hanging_database
+            success
+        fi
     else
         echo ">>> Already Installed"
     fi
@@ -55,23 +112,11 @@ install(){
     return 0
 }
 
-php_call(){
-    php_command='php -r "require('"'vtigercrmInstallUtils.php'"');'$1';"'
-    echo -n $(su - nginx -s /bin/ash -c "cd /opt/ressources/ && $php_command")
-}
-
 config(){
     echo "> Config"
-    echo ">>> Waiting for database to be ready"
-    while  ! $( nc -vz ${DATABASE_HOST} ${DATABASE_PORT} ) ;
-    do
-            sleep 1
-    done
 
-    check_configured
-
-    if [ $NOT_CONFIGURED -eq 0 ]
-    then
+    if [ ! $CONFIGURED -eq 0 ]
+    then 
         sed -i "s/^\(\$dbconfig\['db_server'\] = \).*/\1'${DATABASE_HOST}';/" /var/www/vtigercrm/config.inc.php
 
         sed -i "s/^\(\$dbconfig\['db_port'\] = \).*/\1':${DATABASE_PORT}';/" /var/www/vtigercrm/config.inc.php
@@ -87,7 +132,7 @@ config(){
         sed -i "s/^\(\$application_unique_key = \).*/\1'$application_unique_key';/" /var/www/vtigercrm/config.inc.php
 
         echo ">>> Importing vtigercrm database"
-        do_import_db /opt/ressources/vtigercrm.sql  || return 1
+        do_import_db /opt/ressources/vtigercrm/vtigercrm.sql  || return 1
 
         echo ">>> Changing admin information"
         query_to_change_admin=$(php_call "get_query_to_change_admin('${ADMIN_USERNAME}', '${ADMIN_PASSWORD}', '${ADMIN_EMAIL}')")
@@ -98,33 +143,34 @@ config(){
         do_query "$query_appkey"
 
         add_configured
-    elif [ $DB_PROBLEM -eq 0 ]
-    then
-        echo "Can't connect to database"
-        echo "Query answer: $OUT"
-        kill 1
     else
-        echo "Already configured"
+        echo ">>> Already Configured"
     fi
+    
+    echo ">>> Switching to vtigercrm nginx conf"
+    switch_nginx_conf
+
+    echo 0 > /tmp/vtigercrm_configured
+
+    return 0
 }
 
-
 cleanup(){
-        rm -f /opt/ressources/*
+        rm -rf /opt/ressources/vtigercrm/
         return 0
 }
 
 fail(){
   echo "[ Failed ]"
   echo "1" > /tmp/vtigercrm
-  return 1
+  exit 1
 
 }
 
 success(){
   echo "[ Success ]"
   echo "0" > /tmp/vtigercrm
-  return 0
+  exit 0
 
 }
 
