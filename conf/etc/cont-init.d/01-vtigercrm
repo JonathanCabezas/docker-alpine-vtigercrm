@@ -11,6 +11,7 @@ wait_db(){
     do
             sleep 1
     done
+    echo ">>> Database ready"
 }
 
 do_query(){
@@ -102,11 +103,18 @@ install(){
             chown nginx:nginx /var/www/vtigercrm -R
         else
             echo ">>> Problem detected, hanging database with no installation"
-            switch_nginx_conf hanging_database
+            switch_nginx_conf hanging_db
             success
         fi
     else
-        echo ">>> Already Installed"
+        if [ ! $CONFIGURED -eq 0 ]
+        then
+            echo ">>> Already installed but the database was dropped"
+            switch_nginx_conf db_dropped
+            success
+        else
+            echo ">>> Already installed"
+        fi
     fi
 
     return 0
@@ -156,22 +164,20 @@ config(){
 }
 
 cleanup(){
-        rm -rf /opt/ressources/vtigercrm/
-        return 0
+    rm -rf /opt/ressources/vtigercrm/
+    return 0
 }
 
 fail(){
-  echo "[ Failed ]"
-  echo "1" > /tmp/vtigercrm
-  exit 1
-
+    echo "[ Failed ]"
+    echo "1" > /tmp/vtigercrm
+    exit 1
 }
 
 success(){
-  echo "[ Success ]"
-  echo "0" > /tmp/vtigercrm
-  exit 0
-
+    echo "[ Success ]"
+    echo "0" > /tmp/vtigercrm
+    exit 0
 }
 
 install && config && cleanup && success || fail

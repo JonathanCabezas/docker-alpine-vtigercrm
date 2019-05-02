@@ -7,5 +7,5 @@ run(){
 
 if [ -f /tmp/vtigercrm_configured ] && [ $(cat /tmp/vtigercrm_configured) -eq 0 ]
 then
-    run php /var/www/vtigercrm/vtigercron.php
+    run php vtigercron.php
 fi
